@@ -1,16 +1,22 @@
-use iced::{scrollable, text_input, window, Align, Application, Color, Column, Command, Container, Element, Length, Row, Scrollable, Settings, Subscription, Text, TextInput, Clipboard};
-
-use crate::entries::{Entries, EntriesState, Entry};
-use crate::subscriptions::custom::ExternalCommandSubscription;
-use crate::subscriptions::desktop_entries::DesktopEntryWalker;
-use crate::SETTINGS;
-use crate::THEME;
-use fuzzy_matcher::skim::SkimMatcherV2;
-use iced_native::keyboard::KeyCode;
-use iced_native::Event;
+use core::fmt::Formatter;
 use std::collections::{HashMap, HashSet};
 use std::process::exit;
-use core::fmt::Formatter;
+
+use fuzzy_matcher::skim::SkimMatcherV2;
+use iced::{Align, Application, Clipboard, Color, Column, Command, Container, Element, Length, Row, scrollable, Scrollable, Settings, Subscription, Text, text_input, TextInput, window};
+use iced_native::Event;
+use iced_native::keyboard::KeyCode;
+
+use crate::entries::{Entries, EntriesState, Entry};
+use crate::SETTINGS;
+use crate::backend::launcher::{PopLauncherSubscription, PopMessage};
+use crate::THEME;
+use pop_launcher::{Request, Response};
+use iced::futures::channel::mpsc::{Sender, Receiver, channel};
+use iced::futures::executor::block_on;
+use std::sync::Arc;
+use async_std::sync::Mutex;
+use crate::backend::PopRequest;
 
 pub fn run(requested_modes: Vec<&str>, dmenu: bool) -> iced::Result {
     debug!("Starting Onagre in debug mode");
@@ -57,6 +63,7 @@ pub fn run(requested_modes: Vec<&str>, dmenu: bool) -> iced::Result {
         flags: modes,
         window: window::Settings {
             transparent: true,
+            size: (800, 300),
             ..Default::default()
         },
         default_text_size: 20,
@@ -71,6 +78,7 @@ struct Onagre {
     modes: Vec<Mode>,
     state: State,
     matcher: OnagreMatcher,
+    request_tx: Option<Sender<PopRequest>>,
 }
 
 #[derive(Debug)]
@@ -119,6 +127,7 @@ pub enum Message {
     DesktopEntryEvent(Entry),
     CustomModeEvent(Vec<Entry>),
     KeyboardEvent(KeyCode),
+    PopSubscriptionResponse(PopMessage),
     Loaded(HashMap<Mode, Vec<Entry>>),
 }
 
@@ -153,6 +162,7 @@ impl Application for Onagre {
                 matcher: OnagreMatcher {
                     matcher: SkimMatcherV2::default().ignore_case(),
                 },
+                request_tx: None
             },
             Command::perform(
                 crate::entries::cache::get_cached_entries(modes),
@@ -191,8 +201,15 @@ impl Application for Onagre {
             }
             Message::InputChanged(input) => {
                 self.state.input_value = input;
-                self.reset_matches();
-                self.reset_selection();
+                debug!("Input changed");
+
+                if let Some(sender) = &self.request_tx {
+                    let mut sender = sender.clone();
+                    let value = self.state.input_value.clone();
+                    debug!("Sending message to pop thread : {}", value);
+                    sender.try_send(PopRequest::Search(value)).unwrap();
+                }
+
                 Command::none()
             }
             Message::KeyboardEvent(event) => {
@@ -219,29 +236,33 @@ impl Application for Onagre {
                 self.reset_matches();
                 Command::none()
             }
+            Message::PopSubscriptionResponse(message) => {
+                match message {
+                    PopMessage::Ready(sender) => {
+                        debug!("Subscription read, sender set");
+                        self.request_tx = Some(sender);
+                    },
+                    PopMessage::Message(content) => {
+                        debug!("Receiver in UI Thread from pop launcher {:?}", content);
+                    },
+                };
+                Command::none()
+            }
         }
     }
 
     fn subscription(&self) -> Subscription<Message> {
         let keyboard_event = iced_native::subscription::events_with(|event, _status| match event {
             Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                modifiers: _,
-                key_code,
-            }) => Some(Message::KeyboardEvent(key_code)),
+                                modifiers: _,
+                                key_code,
+                            }) => Some(Message::KeyboardEvent(key_code)),
             _ => None,
         });
 
-        let mut subs = vec![keyboard_event];
+        let subs = vec![keyboard_event, PopLauncherSubscription::subscription()
+            .map(Message::PopSubscriptionResponse)];
 
-        let mode_subs: Vec<Subscription<Message>> = self
-            .state
-            .mode_subs
-            .iter()
-            .cloned()
-            .filter_map(Mode::into_subscription)
-            .collect();
-
-        subs.extend(mode_subs);
 
         Subscription::batch(subs)
     }
@@ -282,8 +303,8 @@ impl Application for Onagre {
                 .scroller_width(THEME.scrollable.scrollbar_width)
                 .style(&THEME.scrollable),
         )
-        .style(&THEME.scrollable)
-        .padding(THEME.scrollable.padding);
+            .style(&THEME.scrollable)
+            .padding(THEME.scrollable.padding);
 
         // Switch mode menu
         let mode_menu = Container::new(
@@ -292,8 +313,8 @@ impl Application for Onagre {
                 .height(THEME.menu.width.into())
                 .width(THEME.menu.height.into()),
         )
-        .padding(THEME.menu.padding)
-        .style(&THEME.menu);
+            .padding(THEME.menu.padding)
+            .style(&THEME.menu);
 
         let search_input = TextInput::new(
             &mut self.state.input,
@@ -301,8 +322,8 @@ impl Application for Onagre {
             &self.state.input_value,
             Message::InputChanged,
         )
-        .width(THEME.search.bar.text_width.into())
-        .style(&THEME.search.bar);
+            .width(THEME.search.bar.text_width.into())
+            .style(&THEME.search.bar);
 
         let search_bar = Container::new(
             Row::new()
@@ -313,8 +334,8 @@ impl Application for Onagre {
                 .width(THEME.search.width.into())
                 .height(THEME.search.height.into()),
         )
-        .padding(THEME.search.padding)
-        .style(&THEME.search);
+            .padding(THEME.search.padding)
+            .style(&THEME.search);
 
         let app_container = Container::new(
             Column::new()
@@ -326,7 +347,7 @@ impl Application for Onagre {
                 .width(Length::Fill)
                 .padding(20),
         )
-        .style(THEME.as_ref());
+            .style(THEME.as_ref());
 
         app_container.into()
     }
@@ -442,7 +463,6 @@ impl Onagre {
                 display_name: input.clone(),
                 exec: None,
                 search_terms: None,
-                icon: None,
             });
 
             std::process::Command::new(&args[0])
@@ -464,15 +484,16 @@ impl Onagre {
                 if self.state.line_selected_idx != 0 {
                     self.state.line_selected_idx -= 1
                 }
+                let mode = self.get_current_mode().clone();
+                self.snap(mode);
             }
             KeyCode::Down => {
-                let mode = self.get_current_mode();
-
-                let max_idx = self.state.entries.mode_matches.get(mode).unwrap().len();
-
-                if max_idx != 0 && self.state.line_selected_idx < max_idx - 1 {
+                let mode = self.get_current_mode().clone();
+                let total_items = self.state.entries.mode_matches.get(&mode).unwrap().len();
+                if total_items != 0 && self.state.line_selected_idx < total_items - 1 {
                     self.state.line_selected_idx += 1
                 }
+                self.snap(mode);
             }
             KeyCode::Enter => {
                 self.run_command();
@@ -488,6 +509,19 @@ impl Onagre {
             }
             _ => {}
         }
+    }
+
+    fn snap(&mut self, mode: Mode) {
+        let total_items = self.state.entries.mode_matches.get(&mode).unwrap().len() as f32;
+
+        let line_offset = if self.state.line_selected_idx == 0 {
+            0
+        } else {
+            self.state.line_selected_idx + 1
+        } as f32;
+
+        let offset = (1.0 / total_items) * (line_offset) as f32;
+        self.state.scroll.snap_to(offset);
     }
 
     fn reset_selection(&mut self) {
@@ -597,22 +631,10 @@ impl Onagre {
     }
 }
 
-impl Mode {
-    fn into_subscription(self) -> Option<Subscription<Message>> {
-        match self {
-            Mode::Drun => Some(DesktopEntryWalker::subscription().map(Message::DesktopEntryEvent)),
-            Mode::Custom(name) => {
-                SETTINGS
-                    .modes
-                    .get(&name)
-                    .unwrap()
-                    .source
-                    .as_ref()
-                    .map(|source| {
-                        ExternalCommandSubscription::subscription(&source)
-                            .map(Message::CustomModeEvent)
-                    })
-            }
-        }
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test() {
+        assert_eq!(0.2 * 5 as f32, 1.0);
     }
 }

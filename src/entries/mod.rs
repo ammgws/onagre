@@ -1,9 +1,6 @@
 pub mod cache;
 
-use crate::freedesktop::desktop::DesktopEntryInContent;
-use crate::freedesktop::icons::{Extension, IconFinder, IconPath};
 use crate::onagre::{Message, Mode};
-use crate::SETTINGS;
 use crate::THEME;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -25,7 +22,6 @@ pub struct Entry {
     pub display_name: String,
     pub exec: Option<String>,
     pub search_terms: Option<String>,
-    pub icon: Option<IconPath>,
 }
 
 impl PartialEq<Entry> for Entry {
@@ -55,32 +51,6 @@ impl<'a> Entry {
             display_name,
             exec: None,
             search_terms: None,
-            icon: None,
-        }
-    }
-
-    pub fn from_desktop_entry(
-        desktop_entry: DesktopEntryInContent,
-        finder: Option<&IconFinder>,
-    ) -> Self {
-        let search_terms = desktop_entry
-            .keywords
-            .as_ref()
-            .map(|keywords| format!("{} {}", &desktop_entry.name, keywords.replace(";", " ")));
-
-        let icon = match finder {
-            None => None,
-            Some(finder) => desktop_entry.get_icon(32, finder),
-        };
-
-        let exec = Some(desktop_entry.exec);
-        let display_name = desktop_entry.name;
-        Entry {
-            weight: 0,
-            display_name,
-            exec,
-            search_terms,
-            icon,
         }
     }
 
@@ -111,24 +81,26 @@ impl<'a> Entry {
     }
 
     fn as_row(&self) -> Container<'a, Message> {
-        let mut row = if SETTINGS.icons.is_some() && self.icon.is_some() {
-            let icon = self.icon.as_ref().unwrap();
-            match &icon.extension {
-                Extension::SVG => Row::new().push(
-                    Svg::from_path(&icon.path)
-                        .height(Length::Units(32))
-                        .width(Length::Units(32)),
-                ),
+      //  let mut row = if SETTINGS.icons.is_some() && self.icon.is_some() {
+      //      let icon = self.icon.as_ref().unwrap();
+      //      match &icon.extension {
+      //          Extension::SVG => Row::new().push(
+      //              Svg::from_path(&icon.path)
+      //                  .height(Length::Units(32))
+      //                  .width(Length::Units(32)),
+      //          ),
 
-                Extension::PNG => Row::new().push(
-                    Image::new(&icon.path)
-                        .height(Length::Units(32))
-                        .width(Length::Units(32)),
-                ),
-            }
-        } else {
-            Row::new()
-        };
+      //          Extension::PNG => Row::new().push(
+      //              Image::new(&icon.path)
+      //                  .height(Length::Units(32))
+      //                  .width(Length::Units(32)),
+      //          ),
+      //      }
+      //  } else {
+      //      Row::new()
+      //  };
+
+        let mut row = Row::new();
 
         row = row
             .push(

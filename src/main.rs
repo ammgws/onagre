@@ -6,6 +6,8 @@ extern crate lazy_static;
 extern crate log;
 #[macro_use]
 extern crate anyhow;
+#[macro_use]
+extern crate async_std;
 
 use clap::{App, Arg};
 
@@ -14,7 +16,8 @@ pub mod entries;
 mod freedesktop;
 mod onagre;
 mod style;
-mod subscriptions;
+mod pop_launcher;
+mod backend;
 
 use crate::config::OnagreSettings;
 use crate::style::theme::Theme;
